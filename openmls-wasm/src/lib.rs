@@ -14,7 +14,7 @@ use openmls_traits::{types::Ciphersuite, OpenMlsProvider};
 use tls_codec::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use serde::{Serialize as SerdeSerialize, Deserialize as SerdeDeserialize};
-use openmls::prelude::{LeafNodeIndex as OpenMlsLeafNodeIndex};
+use openmls::prelude::{LeafNodeIndex as OpenMlsLeafNodeIndex, Member};
 
 #[wasm_bindgen]
 extern "C" {
@@ -37,6 +37,19 @@ static CRYPTO_CONFIG: CryptoConfig = CryptoConfig {
     ciphersuite: CIPHERSUITE,
     version: VERSION,
 };
+
+#[wasm_bindgen]
+pub struct LeafNodeIndex(OpenMlsLeafNodeIndex);
+
+impl LeafNodeIndex {
+    // Method to clone the inner OpenMlsKeyPackage
+    pub fn clone_inner(&self) -> OpenMlsLeafNodeIndex {
+        self.0.clone()
+    }
+    pub fn new(inner: OpenMlsLeafNodeIndex) -> LeafNodeIndex {
+        LeafNodeIndex(inner)
+    }
+}
 
 #[wasm_bindgen]
 #[derive(Default)]
@@ -332,6 +345,26 @@ impl Group {
             })
     }
 
+    pub fn get_member_index(
+        &self,
+        member: &KeyPackage
+    ) -> Result<LeafNodeIndex, JsError> {
+        let member_signature = member.0.leaf_node().signature_key().as_slice();
+
+        let group_members = self.mls_group.members().collect::<Vec<Member>>();
+
+        let member_match = group_members
+            .iter()
+            .find(|&member| {
+                member.signature_key.as_slice() == member_signature
+            });
+
+        match member_match {
+            Some(found_member) => Ok(LeafNodeIndex::new(found_member.index)),
+            None => Err(JsError::new("Member not found.")),
+        }
+    }
+
     pub fn serialize(&self) -> Result<String, JsError> {
         serde_json::to_string(self)
             .map_err(|e| JsError::new(&format!("Serialization error: {}", e)))
@@ -420,6 +453,26 @@ impl Group {
             welcome,
         })
     }
+
+    pub fn native_get_member_index(
+        &self,
+        member: &KeyPackage
+    ) -> Result<OpenMlsLeafNodeIndex, JsError> {
+        let member_signature = member.0.leaf_node().signature_key().as_slice();
+
+        let group_members = self.mls_group.members().collect::<Vec<Member>>();
+
+        let member_match = group_members
+            .iter()
+            .find(|&member| {
+                member.signature_key.as_slice() == member_signature
+            });
+
+        match member_match {
+            Some(found_member) => Ok(found_member.index),
+            None => Err(JsError::new("Member not found.")),
+        }
+    }
 }
 
 #[wasm_bindgen]
@@ -445,21 +498,6 @@ impl KeyPackage {
 }
 
 #[wasm_bindgen]
-pub struct LeafNodeIndex(OpenMlsLeafNodeIndex);
-
-impl LeafNodeIndex {
-    // Method to clone the inner OpenMlsKeyPackage
-    pub fn clone_inner(&self) -> OpenMlsLeafNodeIndex {
-        self.0.clone()
-    }
-    pub fn new(inner: OpenMlsLeafNodeIndex) -> LeafNodeIndex {
-        LeafNodeIndex(inner)
-    }
-}
-
-
-
-#[wasm_bindgen]
 pub struct RatchetTree(RatchetTreeIn);
 
 fn mls_message_to_uint8array(msg: &MlsMessageOut) -> Uint8Array {
@@ -479,7 +517,6 @@ fn mls_message_to_u8vec(msg: &MlsMessageOut) -> Vec<u8> {
     msg.tls_serialize(&mut serialized).unwrap();
     serialized
 }
-
 
 
 #[cfg(test)]
@@ -506,7 +543,6 @@ mod tests {
     // }
 
     use wasm_bindgen_test::*;
-    use openmls::prelude::Member;
 
     wasm_bindgen_test_configure!(run_in_browser);
 
@@ -646,31 +682,15 @@ mod tests {
         log(&format!("bob key:      {}", bytes_to_array_string_vec(bob_exported_key)));
         log(&format!("carol key:    {}", bytes_to_array_string_vec(carol_exported_key)));
 
-        let alice_signature = alice_key_pkg.0.leaf_node().signature_key().as_slice();
-        // ANCHOR: retrieve_members
-        let bob_members = chess_club_bob.mls_group.members().collect::<Vec<Member>>();
-        // ANCHOR_END: retrieve_members
-
-        let alice_member = bob_members
-            .iter()
-            .find(
-                |Member {
-                     index: _,
-                     signature_key,
-                     ..
-                 }| {
-
-                    // log(&format!("credential:    {}", bytes_to_array_string_u8(signature_key.as_slice())));
-                    signature_key.as_slice() == alice_signature
-                },
-            )
-            .expect("Couldn't find Bob in the list of group members.");
+        let alice_index = chess_club_bob.native_get_member_index(&alice_key_pkg)
+            .map_err(js_error_to_string)
+            .unwrap();
 
         // let bob_index = bob_member.index;
         // log(&format!("bob index:    {}", bob_index));
 
         let remove_msg_alice = chess_club_bob
-            .native_remove_member(&bob_provider, &bob, alice_member.index)
+            .native_remove_member(&bob_provider, &bob, alice_index)
             .map_err(js_error_to_string)
             .unwrap();
 
@@ -679,9 +699,9 @@ mod tests {
             .map_err(js_error_to_string)
             .unwrap();
 
-         chess_club_carol.process_message(&carol_provider,&remove_msg_alice.commit)
-             .map_err(js_error_to_string)
-             .unwrap();
+        chess_club_carol.process_message(&carol_provider, &remove_msg_alice.commit)
+            .map_err(js_error_to_string)
+            .unwrap();
 
         let alice_exported_key = &chess_club_alice
             .export_key(&alice_provider, "chess_key", &[0x30], 32)
@@ -713,7 +733,7 @@ mod tests {
             .map_err(js_error_to_string)
             .unwrap();
 
-        chess_club_carol.process_message(&carol_provider,&update_bob_key_msg.commit)
+        chess_club_carol.process_message(&carol_provider, &update_bob_key_msg.commit)
             .map_err(js_error_to_string)
             .unwrap();
 
@@ -731,7 +751,5 @@ mod tests {
         log(&format!("carol key:    {}", bytes_to_array_string_vec(carol_exported_key)));
 
         assert_eq!(carol_exported_key, bob_exported_key);
-
     }
-
 }
