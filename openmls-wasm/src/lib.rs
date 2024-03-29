@@ -255,6 +255,26 @@ impl Group {
         })
     }
 
+    pub fn update_key_package(
+        &mut self,
+        provider: &Provider,
+        sender: &Identity,
+    ) -> Result<RemoveMessages, JsError> {
+        let (mls_message_out, welcome_option, _group_info) = self
+            .mls_group
+            .self_update(provider.as_ref(), &sender.keypair)
+            .map_err(|e| JsError::new(&format!("Failed to update keypair: {}", e)))?;
+
+        let commit = mls_message_to_uint8array(&mls_message_out);
+        let welcome = welcome_option.map(|welcome_message| mls_message_to_uint8array(&welcome_message));
+
+        Ok(RemoveMessages {
+            commit,
+            welcome,
+        })
+    }
+
+
     pub fn merge_pending_commit(&mut self, provider: &Provider) -> Result<(), JsError> {
         self.mls_group
             .merge_pending_commit(provider.as_ref())
@@ -373,6 +393,24 @@ impl Group {
             .mls_group
             .remove_members(provider.as_ref(), &sender.keypair, &[removed_member])
             .map_err(|e| JsError::new(&format!("Failed to remove member: {}", e)))?;
+
+        let commit = mls_message_to_u8vec(&mls_message_out);
+        let welcome = welcome_option.map(|welcome_message| mls_message_to_u8vec(&welcome_message));
+
+        Ok(NativeRemoveMessages {
+            commit,
+            welcome,
+        })
+    }
+    pub fn native_update_key_package(
+        &mut self,
+        provider: &Provider,
+        sender: &Identity,
+    ) -> Result<NativeRemoveMessages, JsError> {
+        let (mls_message_out, welcome_option, _group_info) = self
+            .mls_group
+            .self_update(provider.as_ref(), &sender.keypair)
+            .map_err(|e| JsError::new(&format!("Failed to update keypair: {}", e)))?;
 
         let commit = mls_message_to_u8vec(&mls_message_out);
         let welcome = welcome_option.map(|welcome_message| mls_message_to_u8vec(&welcome_message));
@@ -530,6 +568,7 @@ mod tests {
 
         let mut chess_club_alice = Group::create_new(&alice_provider, &alice, "chess club");
 
+        let alice_key_pkg = alice.key_package(&alice_provider);
         let bob_key_pkg = bob.key_package(&bob_provider);
         let carol_key_pkg = carol.key_package(&carol_provider);
 
@@ -588,18 +627,10 @@ mod tests {
         assert_ne!(bob_exported_key, alice_exported_key);
         assert_eq!(carol_exported_key, alice_exported_key);
 
-        match chess_club_bob.process_message(&bob_provider, &add_msgs_carol.commit) {
-            Ok(_) => { log("Message processed successfully") }
-            Err(e) => {
-                let error_message = js_error_to_string(e);
-                log(&format!("err:   {}", error_message));
-                // Optionally, return or handle the error here instead of expecting
-            }
-        }
-        chess_club_bob
-            .merge_pending_commit(&bob_provider)
+        chess_club_bob.process_message(&bob_provider, &add_msgs_carol.commit)
             .map_err(js_error_to_string)
             .unwrap();
+
 
         let bob_exported_key = &chess_club_bob
             .export_key(&bob_provider, "chess_key", &[0x30], 32)
@@ -612,12 +643,12 @@ mod tests {
         log(&format!("bob key:      {}", bytes_to_array_string_vec(bob_exported_key)));
         log(&format!("carol key:    {}", bytes_to_array_string_vec(carol_exported_key)));
 
-        let bob_signature = bob_key_pkg.0.leaf_node().signature_key().as_slice();
+        let alice_signature = alice_key_pkg.0.leaf_node().signature_key().as_slice();
         // ANCHOR: retrieve_members
-        let alice_members = chess_club_alice.mls_group.members().collect::<Vec<Member>>();
+        let bob_members = chess_club_bob.mls_group.members().collect::<Vec<Member>>();
         // ANCHOR_END: retrieve_members
 
-        let bob_member = alice_members
+        let alice_member = bob_members
             .iter()
             .find(
                 |Member {
@@ -627,7 +658,7 @@ mod tests {
                  }| {
 
                     // log(&format!("credential:    {}", bytes_to_array_string_u8(signature_key.as_slice())));
-                    signature_key.as_slice() == bob_signature
+                    signature_key.as_slice() == alice_signature
                 },
             )
             .expect("Couldn't find Bob in the list of group members.");
@@ -635,24 +666,19 @@ mod tests {
         // let bob_index = bob_member.index;
         // log(&format!("bob index:    {}", bob_index));
 
-        let remove_msg_bob = chess_club_alice
-            .native_remove_member(&alice_provider, &alice, bob_member.index)
+        let remove_msg_alice = chess_club_bob
+            .native_remove_member(&bob_provider, &bob, alice_member.index)
             .map_err(js_error_to_string)
             .unwrap();
 
-        chess_club_alice
+        chess_club_bob
             .merge_pending_commit(&alice_provider)
             .map_err(js_error_to_string)
             .unwrap();
 
-        match chess_club_carol.process_message(&carol_provider,&remove_msg_bob.commit) {
-            Ok(_) => { log("Message processed successfully") }
-            Err(e) => {
-                let error_message = js_error_to_string(e);
-                log(&format!("err:   {}", error_message));
-                // Optionally, return or handle the error here instead of expecting
-            }
-        }
+         chess_club_carol.process_message(&carol_provider,&remove_msg_alice.commit)
+             .map_err(js_error_to_string)
+             .unwrap();
 
         let alice_exported_key = &chess_club_alice
             .export_key(&alice_provider, "chess_key", &[0x30], 32)
@@ -672,8 +698,36 @@ mod tests {
         log(&format!("carol key:    {}", bytes_to_array_string_vec(carol_exported_key)));
 
         assert_ne!(bob_exported_key, alice_exported_key);
-        assert_eq!(carol_exported_key, alice_exported_key);
+        assert_eq!(carol_exported_key, bob_exported_key);
 
+        let update_bob_key_msg = chess_club_bob
+            .native_update_key_package(&bob_provider, &bob)
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        chess_club_bob
+            .merge_pending_commit(&alice_provider)
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        chess_club_carol.process_message(&carol_provider,&update_bob_key_msg.commit)
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        let bob_exported_key = &chess_club_bob
+            .export_key(&bob_provider, "chess_key", &[0x30], 32)
+            .map_err(js_error_to_string)
+            .unwrap();
+        let carol_exported_key = &chess_club_carol
+            .export_key(&carol_provider, "chess_key", &[0x30], 32)
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        log(&format!("alice key:    {}", bytes_to_array_string_vec(alice_exported_key)));
+        log(&format!("bob key:      {}", bytes_to_array_string_vec(bob_exported_key)));
+        log(&format!("carol key:    {}", bytes_to_array_string_vec(carol_exported_key)));
+
+        assert_eq!(carol_exported_key, bob_exported_key);
 
     }
 
