@@ -14,7 +14,7 @@ use openmls_traits::{types::Ciphersuite, OpenMlsProvider};
 use tls_codec::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use serde::{Serialize as SerdeSerialize, Deserialize as SerdeDeserialize};
-use openmls::prelude::{KeyPackageRef, LeafNodeIndex as OpenMlsLeafNodeIndex};
+use openmls::prelude::{LeafNodeIndex as OpenMlsLeafNodeIndex};
 
 #[wasm_bindgen]
 extern "C" {
@@ -480,19 +480,10 @@ fn mls_message_to_u8vec(msg: &MlsMessageOut) -> Vec<u8> {
     serialized
 }
 
-fn bytes_to_array_string_vec(bytes: &Vec<u8>) -> String {
-    let strings: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
-    format!("[{}]", strings.join(", "))
-}
 
-fn bytes_to_array_string_u8(bytes: &[u8]) -> String {
-    let strings: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
-    format!("[{}]", strings.join(", "))
-}
 
 #[cfg(test)]
 mod tests {
-    use tls_codec::VLBytes;
     use super::*;
 
     fn js_error_to_string(e: JsError) -> String {
@@ -501,6 +492,18 @@ mod tests {
         log(&format!("JsError as JsValue: {:?}", v));
         v.as_string().unwrap_or_else(|| "Unknown error occurred".to_string())
     }
+
+    #[cfg(test)]
+    fn bytes_to_array_string_vec(bytes: &Vec<u8>) -> String {
+        let strings: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
+        format!("[{}]", strings.join(", "))
+    }
+
+    // #[cfg(test)]
+    // fn bytes_to_array_string_u8(bytes: &[u8]) -> String {
+    //     let strings: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
+    //     format!("[{}]", strings.join(", "))
+    // }
 
     use wasm_bindgen_test::*;
     use openmls::prelude::Member;
