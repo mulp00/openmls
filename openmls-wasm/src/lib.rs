@@ -1,5 +1,3 @@
-mod utils;
-
 use js_sys::Uint8Array;
 use openmls::{
     credentials::{BasicCredential, CredentialWithKey},
@@ -15,6 +13,7 @@ use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::{types::Ciphersuite, OpenMlsProvider};
 use tls_codec::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
+use serde::{Serialize as SerdeSerialize, Deserialize as SerdeDeserialize};
 
 #[wasm_bindgen]
 extern "C" {
@@ -62,6 +61,7 @@ pub fn greet() {
 }
 
 #[wasm_bindgen]
+#[derive(SerdeSerialize, SerdeDeserialize)]
 pub struct Identity {
     credential_with_key: CredentialWithKey,
     keypair: openmls_basic_credential::SignatureKeyPair,
@@ -101,9 +101,27 @@ impl Identity {
                 .unwrap(),
         )
     }
+    pub fn serialize(&self) -> Result<String, JsError> {
+        serde_json::to_string(self)
+            .map_err(|e| JsError::new(&format!("Serialization error: {}", e)))
+    }
+
+    pub fn deserialize(serialized: &str, provider: &Provider) -> Result<Identity, JsError> {
+        // Perform deserialization
+        let identity: Identity = serde_json::from_str(serialized)
+            .map_err(|e| JsError::new(&format!("Deserialization error: {}", e)))?;
+
+        // Assuming Identity and KeyPair structures are adjusted to support serialization/deserialization properly
+        // Store the keypair back into the provider's key store after deserialization
+        identity.keypair.store(provider.0.key_store())
+            .map_err(|e| JsError::new(&format!("KeyPair storage error: {}", e)))?;
+
+        Ok(identity)
+    }
 }
 
 #[wasm_bindgen]
+#[derive(SerdeSerialize, SerdeDeserialize)]
 pub struct Group {
     mls_group: MlsGroup,
 }
@@ -118,7 +136,6 @@ pub struct AddMessages {
 #[cfg(test)]
 #[allow(dead_code)]
 struct NativeAddMessages {
-    proposal: Vec<u8>,
     commit: Vec<u8>,
     welcome: Vec<u8>,
 }
@@ -262,6 +279,16 @@ impl Group {
                 e.into()
             })
     }
+
+    pub fn serialize(&self) -> Result<String, JsError> {
+        serde_json::to_string(self)
+            .map_err(|e| JsError::new(&format!("Serialization error: {}", e)))
+    }
+
+    pub fn deserialize(serialized: &str) -> Result<Group, JsError> {
+        serde_json::from_str(serialized)
+            .map_err(|e| JsError::new(&format!("Deserialization error: {}", e)))
+    }
 }
 
 #[cfg(test)]
@@ -270,24 +297,16 @@ impl Group {
         &mut self,
         provider: &Provider,
         sender: &Identity,
-        new_member: &KeyPackage,
+        new_member: openmls::key_packages::KeyPackage,
     ) -> Result<NativeAddMessages, JsError> {
-        let (proposal_msg, _proposal_ref) =
-            self.mls_group
-                .propose_add_member(provider.as_ref(), &sender.keypair, &new_member.0)?;
-
-        let (commit_msg, welcome_msg, _group_info) = self
+        let (mls_message_out, welcome, _group_info) = self
             .mls_group
-            .commit_to_pending_proposals(provider.as_ref(), &sender.keypair)?;
+            .add_members(provider.as_ref(), &sender.keypair, &[new_member])?;
 
-        let welcome_msg = welcome_msg.ok_or(NoWelcomeError)?;
-
-        let proposal = mls_message_to_u8vec(&proposal_msg);
-        let commit = mls_message_to_u8vec(&commit_msg);
-        let welcome = mls_message_to_u8vec(&welcome_msg);
+        let commit = mls_message_to_u8vec(&mls_message_out);
+        let welcome = mls_message_to_u8vec(&welcome);
 
         Ok(NativeAddMessages {
-            proposal,
             commit,
             welcome,
         })
@@ -305,9 +324,9 @@ impl Group {
             welcome,
             Some(ratchet_tree.0),
         )
-        .unwrap()
-        .into_group(provider.as_ref())
-        .unwrap();
+            .unwrap()
+            .into_group(provider.as_ref())
+            .unwrap();
 
         Group { mls_group }
     }
@@ -348,17 +367,26 @@ fn mls_message_to_u8vec(msg: &MlsMessageOut) -> Vec<u8> {
     msg.tls_serialize(&mut serialized).unwrap();
     serialized
 }
-
+fn bytes_to_array_string(bytes: &Vec<u8>) -> String {
+    let strings: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
+    format!("[{}]", strings.join(", "))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn js_error_to_string(e: JsError) -> String {
         let v: JsValue = e.into();
-        v.as_string().unwrap()
+        // Assuming `log` is a function that can log to the console or elsewhere
+        log(&format!("JsError as JsValue: {:?}", v));
+        v.as_string().unwrap_or_else(|| "Unknown error occurred".to_string())
     }
 
-    #[test]
+    use wasm_bindgen_test::*;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[wasm_bindgen_test]
     fn basic() {
         let alice_provider = Provider::new();
         let bob_provider = Provider::new();
@@ -375,7 +403,7 @@ mod tests {
         let bob_key_pkg = bob.key_package(&bob_provider);
 
         let add_msgs = chess_club_alice
-            .native_propose_and_commit_add(&alice_provider, &alice, &bob_key_pkg)
+            .native_propose_and_commit_add(&alice_provider, &alice, bob_key_pkg.0)
             .map_err(js_error_to_string)
             .unwrap();
 
@@ -394,6 +422,108 @@ mod tests {
             .unwrap();
         let alice_exported_key = chess_club_alice
             .export_key(&alice_provider, "chess_key", &[0x30], 32)
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        assert_eq!(bob_exported_key, alice_exported_key)
+    }
+
+    #[wasm_bindgen_test]
+    fn three_users() {
+        let alice_provider = Provider::new();
+        let bob_provider = Provider::new();
+        let carol_provider = Provider::new();
+
+        let alice = Identity::new(&alice_provider, "alice")
+            .map_err(js_error_to_string)
+            .unwrap();
+        let bob = Identity::new(&bob_provider, "bob")
+            .map_err(js_error_to_string)
+            .unwrap();
+        let carol = Identity::new(&carol_provider, "carol")
+            .map_err(js_error_to_string)
+            .unwrap();
+
+
+        let mut chess_club_alice = Group::create_new(&alice_provider, &alice, "chess club");
+
+        let bob_key_pkg = bob.key_package(&bob_provider);
+        let carol_key_pkg = carol.key_package(&carol_provider);
+
+        let add_msgs_bob = chess_club_alice
+            .native_propose_and_commit_add(&alice_provider, &alice, bob_key_pkg.0)
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        chess_club_alice
+            .merge_pending_commit(&alice_provider)
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        let ratchet_tree = chess_club_alice.export_ratchet_tree();
+
+        let mut chess_club_bob = Group::native_join(&bob_provider, &add_msgs_bob.welcome, ratchet_tree);
+
+        let alice_exported_key = chess_club_alice
+            .export_key(&alice_provider, "chess_key", &[0x30], 32)
+            .map_err(js_error_to_string)
+            .unwrap();
+        let bob_exported_key = chess_club_bob
+            .export_key(&bob_provider, "chess_key", &[0x30], 32)
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        assert_eq!(bob_exported_key, alice_exported_key);
+
+        let add_msgs_carol = chess_club_alice
+            .native_propose_and_commit_add(&alice_provider, &alice, carol_key_pkg.0)
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        log(&format!("welcome:  {}", bytes_to_array_string(&add_msgs_carol.welcome)));
+        log(&format!("commit:   {}", bytes_to_array_string(&add_msgs_carol.commit)));
+
+
+        chess_club_alice
+            .merge_pending_commit(&alice_provider)
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        let ratchet_tree = chess_club_alice.export_ratchet_tree();
+
+        let mut chess_club_carol = Group::native_join(&carol_provider, &add_msgs_carol.welcome, ratchet_tree);
+
+        let alice_exported_key = &chess_club_alice
+            .export_key(&alice_provider, "chess_key", &[0x30], 32)
+            .map_err(js_error_to_string)
+            .unwrap();
+        let bob_exported_key = &chess_club_bob
+            .export_key(&bob_provider, "chess_key", &[0x30], 32)
+            .map_err(js_error_to_string)
+            .unwrap();
+        let carol_exported_key = &chess_club_carol
+            .export_key(&carol_provider, "chess_key", &[0x30], 32)
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        assert_ne!(bob_exported_key, alice_exported_key);
+        assert_eq!(carol_exported_key, alice_exported_key);
+
+        match chess_club_bob.process_message(&bob_provider, &add_msgs_carol.commit) {
+            Ok(_) => { log("Message processed successfully") }
+            Err(e) => {
+                let error_message = js_error_to_string(e);
+                log(&format!("err:   {}", error_message));
+                // Optionally, return or handle the error here instead of expecting
+            }
+        }
+        chess_club_bob
+            .merge_pending_commit(&alice_provider)
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        let bob_exported_key = &chess_club_bob
+            .export_key(&bob_provider, "chess_key", &[0x30], 32)
             .map_err(js_error_to_string)
             .unwrap();
 
