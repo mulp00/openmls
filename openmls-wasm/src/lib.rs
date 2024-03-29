@@ -14,6 +14,7 @@ use openmls_traits::{types::Ciphersuite, OpenMlsProvider};
 use tls_codec::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use serde::{Serialize as SerdeSerialize, Deserialize as SerdeDeserialize};
+use openmls::prelude::{KeyPackageRef, LeafNodeIndex as OpenMlsLeafNodeIndex};
 
 #[wasm_bindgen]
 extern "C" {
@@ -128,9 +129,14 @@ pub struct Group {
 
 #[wasm_bindgen]
 pub struct AddMessages {
-    proposal: Uint8Array,
     commit: Uint8Array,
     welcome: Uint8Array,
+}
+
+#[wasm_bindgen]
+pub struct RemoveMessages {
+    commit: Uint8Array,
+    welcome: Option<Uint8Array>,
 }
 
 #[cfg(test)]
@@ -140,18 +146,33 @@ struct NativeAddMessages {
     welcome: Vec<u8>,
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
+pub struct NativeRemoveMessages {
+    commit: Vec<u8>,
+    welcome: Option<Vec<u8>>,
+}
+
 #[wasm_bindgen]
 impl AddMessages {
-    #[wasm_bindgen(getter)]
-    pub fn proposal(&self) -> Uint8Array {
-        self.proposal.clone()
-    }
     #[wasm_bindgen(getter)]
     pub fn commit(&self) -> Uint8Array {
         self.commit.clone()
     }
     #[wasm_bindgen(getter)]
     pub fn welcome(&self) -> Uint8Array {
+        self.welcome.clone()
+    }
+}
+
+#[wasm_bindgen]
+impl RemoveMessages {
+    #[wasm_bindgen(getter)]
+    pub fn commit(&self) -> Uint8Array {
+        self.commit.clone()
+    }
+    #[wasm_bindgen(getter)]
+    pub fn welcome(&self) -> Option<Uint8Array> {
         self.welcome.clone()
     }
 }
@@ -196,28 +217,39 @@ impl Group {
         RatchetTree(self.mls_group.export_ratchet_tree().into())
     }
 
-    pub fn propose_and_commit_add(
+    pub fn add_member(
         &mut self,
         provider: &Provider,
         sender: &Identity,
         new_member: &KeyPackage,
     ) -> Result<AddMessages, JsError> {
-        let (proposal_msg, _proposal_ref) =
-            self.mls_group
-                .propose_add_member(provider.as_ref(), &sender.keypair, &new_member.0)?;
-
-        let (commit_msg, welcome_msg, _group_info) = self
+        let (mls_message_out, welcome, _group_info) = self
             .mls_group
-            .commit_to_pending_proposals(&provider.0, &sender.keypair)?;
+            .add_members(provider.as_ref(), &sender.keypair, &[new_member.clone_inner()])?;
 
-        let welcome_msg = welcome_msg.ok_or(NoWelcomeError)?;
-
-        let proposal = mls_message_to_uint8array(&proposal_msg);
-        let commit = mls_message_to_uint8array(&commit_msg);
-        let welcome = mls_message_to_uint8array(&welcome_msg);
+        let commit = mls_message_to_uint8array(&mls_message_out);
+        let welcome = mls_message_to_uint8array(&welcome);
 
         Ok(AddMessages {
-            proposal,
+            commit,
+            welcome,
+        })
+    }
+    pub fn remove_member(
+        &mut self,
+        provider: &Provider,
+        sender: &Identity,
+        removed_member: LeafNodeIndex,
+    ) -> Result<RemoveMessages, JsError> {
+        let (mls_message_out, welcome_option, _group_info) = self
+            .mls_group
+            .remove_members(provider.as_ref(), &sender.keypair, &[removed_member.clone_inner()])
+            .map_err(|e| JsError::new(&format!("Failed to remove member: {}", e)))?;
+
+        let commit = mls_message_to_uint8array(&mls_message_out);
+        let welcome = welcome_option.map(|welcome_message| mls_message_to_uint8array(&welcome_message));
+
+        Ok(RemoveMessages {
             commit,
             welcome,
         })
@@ -293,11 +325,11 @@ impl Group {
 
 #[cfg(test)]
 impl Group {
-    fn native_propose_and_commit_add(
+    fn native_add_member(
         &mut self,
         provider: &Provider,
         sender: &Identity,
-        new_member: openmls::key_packages::KeyPackage,
+        new_member: OpenMlsKeyPackage,
     ) -> Result<NativeAddMessages, JsError> {
         let (mls_message_out, welcome, _group_info) = self
             .mls_group
@@ -330,6 +362,26 @@ impl Group {
 
         Group { mls_group }
     }
+
+    pub fn native_remove_member(
+        &mut self,
+        provider: &Provider,
+        sender: &Identity,
+        removed_member: OpenMlsLeafNodeIndex,
+    ) -> Result<NativeRemoveMessages, JsError> {
+        let (mls_message_out, welcome_option, _group_info) = self
+            .mls_group
+            .remove_members(provider.as_ref(), &sender.keypair, &[removed_member])
+            .map_err(|e| JsError::new(&format!("Failed to remove member: {}", e)))?;
+
+        let commit = mls_message_to_u8vec(&mls_message_out);
+        let welcome = welcome_option.map(|welcome_message| mls_message_to_u8vec(&welcome_message));
+
+        Ok(NativeRemoveMessages {
+            commit,
+            welcome,
+        })
+    }
 }
 
 #[wasm_bindgen]
@@ -346,6 +398,28 @@ impl std::error::Error for NoWelcomeError {}
 
 #[wasm_bindgen]
 pub struct KeyPackage(OpenMlsKeyPackage);
+
+impl KeyPackage {
+    // Method to clone the inner OpenMlsKeyPackage
+    pub fn clone_inner(&self) -> OpenMlsKeyPackage {
+        self.0.clone()
+    }
+}
+
+#[wasm_bindgen]
+pub struct LeafNodeIndex(OpenMlsLeafNodeIndex);
+
+impl LeafNodeIndex {
+    // Method to clone the inner OpenMlsKeyPackage
+    pub fn clone_inner(&self) -> OpenMlsLeafNodeIndex {
+        self.0.clone()
+    }
+    pub fn new(inner: OpenMlsLeafNodeIndex) -> LeafNodeIndex {
+        LeafNodeIndex(inner)
+    }
+}
+
+
 
 #[wasm_bindgen]
 pub struct RatchetTree(RatchetTreeIn);
@@ -367,12 +441,20 @@ fn mls_message_to_u8vec(msg: &MlsMessageOut) -> Vec<u8> {
     msg.tls_serialize(&mut serialized).unwrap();
     serialized
 }
-fn bytes_to_array_string(bytes: &Vec<u8>) -> String {
+
+fn bytes_to_array_string_vec(bytes: &Vec<u8>) -> String {
     let strings: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
     format!("[{}]", strings.join(", "))
 }
+
+fn bytes_to_array_string_u8(bytes: &[u8]) -> String {
+    let strings: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
+    format!("[{}]", strings.join(", "))
+}
+
 #[cfg(test)]
 mod tests {
+    use tls_codec::VLBytes;
     use super::*;
 
     fn js_error_to_string(e: JsError) -> String {
@@ -383,6 +465,7 @@ mod tests {
     }
 
     use wasm_bindgen_test::*;
+    use openmls::prelude::Member;
 
     wasm_bindgen_test_configure!(run_in_browser);
 
@@ -403,7 +486,7 @@ mod tests {
         let bob_key_pkg = bob.key_package(&bob_provider);
 
         let add_msgs = chess_club_alice
-            .native_propose_and_commit_add(&alice_provider, &alice, bob_key_pkg.0)
+            .native_add_member(&alice_provider, &alice, bob_key_pkg.0)
             .map_err(js_error_to_string)
             .unwrap();
 
@@ -451,7 +534,7 @@ mod tests {
         let carol_key_pkg = carol.key_package(&carol_provider);
 
         let add_msgs_bob = chess_club_alice
-            .native_propose_and_commit_add(&alice_provider, &alice, bob_key_pkg.0)
+            .native_add_member(&alice_provider, &alice, bob_key_pkg.0.clone())
             .map_err(js_error_to_string)
             .unwrap();
 
@@ -476,13 +559,9 @@ mod tests {
         assert_eq!(bob_exported_key, alice_exported_key);
 
         let add_msgs_carol = chess_club_alice
-            .native_propose_and_commit_add(&alice_provider, &alice, carol_key_pkg.0)
+            .native_add_member(&alice_provider, &alice, carol_key_pkg.0)
             .map_err(js_error_to_string)
             .unwrap();
-
-        log(&format!("welcome:  {}", bytes_to_array_string(&add_msgs_carol.welcome)));
-        log(&format!("commit:   {}", bytes_to_array_string(&add_msgs_carol.commit)));
-
 
         chess_club_alice
             .merge_pending_commit(&alice_provider)
@@ -518,7 +597,7 @@ mod tests {
             }
         }
         chess_club_bob
-            .merge_pending_commit(&alice_provider)
+            .merge_pending_commit(&bob_provider)
             .map_err(js_error_to_string)
             .unwrap();
 
@@ -527,6 +606,75 @@ mod tests {
             .map_err(js_error_to_string)
             .unwrap();
 
-        assert_eq!(bob_exported_key, alice_exported_key)
+        assert_eq!(bob_exported_key, alice_exported_key);
+
+        log(&format!("alice key:    {}", bytes_to_array_string_vec(alice_exported_key)));
+        log(&format!("bob key:      {}", bytes_to_array_string_vec(bob_exported_key)));
+        log(&format!("carol key:    {}", bytes_to_array_string_vec(carol_exported_key)));
+
+        let bob_signature = bob_key_pkg.0.leaf_node().signature_key().as_slice();
+        // ANCHOR: retrieve_members
+        let alice_members = chess_club_alice.mls_group.members().collect::<Vec<Member>>();
+        // ANCHOR_END: retrieve_members
+
+        let bob_member = alice_members
+            .iter()
+            .find(
+                |Member {
+                     index: _,
+                     signature_key,
+                     ..
+                 }| {
+
+                    // log(&format!("credential:    {}", bytes_to_array_string_u8(signature_key.as_slice())));
+                    signature_key.as_slice() == bob_signature
+                },
+            )
+            .expect("Couldn't find Bob in the list of group members.");
+
+        // let bob_index = bob_member.index;
+        // log(&format!("bob index:    {}", bob_index));
+
+        let remove_msg_bob = chess_club_alice
+            .native_remove_member(&alice_provider, &alice, bob_member.index)
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        chess_club_alice
+            .merge_pending_commit(&alice_provider)
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        match chess_club_carol.process_message(&carol_provider,&remove_msg_bob.commit) {
+            Ok(_) => { log("Message processed successfully") }
+            Err(e) => {
+                let error_message = js_error_to_string(e);
+                log(&format!("err:   {}", error_message));
+                // Optionally, return or handle the error here instead of expecting
+            }
+        }
+
+        let alice_exported_key = &chess_club_alice
+            .export_key(&alice_provider, "chess_key", &[0x30], 32)
+            .map_err(js_error_to_string)
+            .unwrap();
+        let bob_exported_key = &chess_club_bob
+            .export_key(&bob_provider, "chess_key", &[0x30], 32)
+            .map_err(js_error_to_string)
+            .unwrap();
+        let carol_exported_key = &chess_club_carol
+            .export_key(&carol_provider, "chess_key", &[0x30], 32)
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        log(&format!("alice key:    {}", bytes_to_array_string_vec(alice_exported_key)));
+        log(&format!("bob key:      {}", bytes_to_array_string_vec(bob_exported_key)));
+        log(&format!("carol key:    {}", bytes_to_array_string_vec(carol_exported_key)));
+
+        assert_ne!(bob_exported_key, alice_exported_key);
+        assert_eq!(carol_exported_key, alice_exported_key);
+
+
     }
+
 }
