@@ -1,4 +1,9 @@
 use js_sys::Uint8Array;
+use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
+use tls_codec::{Deserialize, Serialize};
+use wasm_bindgen::convert::IntoWasmAbi;
+use wasm_bindgen::prelude::*;
+
 use openmls::{
     credentials::{BasicCredential, CredentialWithKey},
     framing::{MlsMessageBodyIn, MlsMessageIn, MlsMessageOut},
@@ -8,13 +13,11 @@ use openmls::{
     treesync::RatchetTreeIn,
     versions::ProtocolVersion,
 };
+use openmls::prelude::{LeafNodeIndex as OpenMlsLeafNodeIndex, Member};
+use openmls::prelude::OpenMlsKeyStore;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
-use openmls_traits::{types::Ciphersuite, OpenMlsProvider};
-use tls_codec::{Deserialize, Serialize};
-use wasm_bindgen::prelude::*;
-use serde::{Serialize as SerdeSerialize, Deserialize as SerdeDeserialize};
-use openmls::prelude::{LeafNodeIndex as OpenMlsLeafNodeIndex, Member};
+use openmls_traits::{OpenMlsProvider, types::Ciphersuite};
 
 #[wasm_bindgen]
 extern "C" {
@@ -120,12 +123,11 @@ impl Identity {
             .map_err(|e| JsError::new(&format!("Serialization error: {}", e)))
     }
 
-    pub fn deserialize(serialized: &str, provider: &Provider) -> Result<Identity, JsError> {
+    pub fn deserialize(provider: &Provider, serialized: &str) -> Result<Identity, JsError> {
         // Perform deserialization
         let identity: Identity = serde_json::from_str(serialized)
             .map_err(|e| JsError::new(&format!("Deserialization error: {}", e)))?;
 
-        // Assuming Identity and KeyPair structures are adjusted to support serialization/deserialization properly
         // Store the keypair back into the provider's key store after deserialization
         identity.keypair.store(provider.0.key_store())
             .map_err(|e| JsError::new(&format!("KeyPair storage error: {}", e)))?;
@@ -347,7 +349,7 @@ impl Group {
 
     pub fn get_member_index(
         &self,
-        member: &KeyPackage
+        member: &KeyPackage,
     ) -> Result<LeafNodeIndex, JsError> {
         let member_signature = member.0.leaf_node().signature_key().as_slice();
 
@@ -456,7 +458,7 @@ impl Group {
 
     pub fn native_get_member_index(
         &self,
-        member: &KeyPackage
+        member: &KeyPackage,
     ) -> Result<OpenMlsLeafNodeIndex, JsError> {
         let member_signature = member.0.leaf_node().signature_key().as_slice();
 
@@ -503,6 +505,7 @@ impl KeyPackage {
             .map_err(|e| JsError::new(&format!("Deserialization error: {}", e)))
     }
 }
+
 impl KeyPackage {
     // Method to clone the inner OpenMlsKeyPackage
     pub fn clone_inner(&self) -> OpenMlsKeyPackage {
@@ -548,7 +551,8 @@ fn mls_message_to_u8vec(msg: &MlsMessageOut) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::value::Serializer;
+    use wasm_bindgen_test::*;
+
     use super::*;
 
     fn js_error_to_string(e: JsError) -> String {
@@ -569,8 +573,6 @@ mod tests {
     //     let strings: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
     //     format!("[{}]", strings.join(", "))
     // }
-
-    use wasm_bindgen_test::*;
 
     wasm_bindgen_test_configure!(run_in_browser);
 
