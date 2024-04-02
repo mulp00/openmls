@@ -1,3 +1,6 @@
+mod persistent_key_store;
+mod openmls_rust_persistent_crypto;
+
 use js_sys::Uint8Array;
 use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 use tls_codec::{Deserialize, Serialize};
@@ -14,10 +17,9 @@ use openmls::{
     versions::ProtocolVersion,
 };
 use openmls::prelude::{LeafNodeIndex as OpenMlsLeafNodeIndex, Member};
-use openmls::prelude::OpenMlsKeyStore;
 use openmls_basic_credential::SignatureKeyPair;
-use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::{OpenMlsProvider, types::Ciphersuite};
+use crate::openmls_rust_persistent_crypto::OpenMlsRustPersistentCrypto;
 
 #[wasm_bindgen]
 extern "C" {
@@ -56,10 +58,23 @@ impl LeafNodeIndex {
 
 #[wasm_bindgen]
 #[derive(Default)]
-pub struct Provider(OpenMlsRustCrypto);
+pub struct Provider(OpenMlsRustPersistentCrypto);
+#[wasm_bindgen]
+impl Provider {
+    #[wasm_bindgen(js_name = serialize)]
+    pub fn serialize_js(&self) -> Result<String, JsError> {
+        self.0.serialize()
+    }
 
-impl AsRef<OpenMlsRustCrypto> for Provider {
-    fn as_ref(&self) -> &OpenMlsRustCrypto {
+    #[wasm_bindgen(js_name = deserialize)]
+    pub fn deserialize_js(json_str: &str) -> Result<Provider, JsError> {
+        let crypto = OpenMlsRustPersistentCrypto::deserialize(json_str)?;
+        Ok(Provider(crypto))
+    }
+}
+
+impl AsRef<OpenMlsRustPersistentCrypto> for Provider {
+    fn as_ref(&self) -> &OpenMlsRustPersistentCrypto {
         &self.0
     }
 }
@@ -581,6 +596,7 @@ mod tests {
         let alice_provider = Provider::new();
         let bob_provider = Provider::new();
 
+
         let alice = Identity::new(&alice_provider, "alice")
             .map_err(js_error_to_string)
             .unwrap();
@@ -592,13 +608,21 @@ mod tests {
 
         let bob_key_pkg = bob.key_package(&bob_provider);
 
+        let serialized_provider = alice_provider.serialize_js()
+            .map_err(js_error_to_string)
+            .unwrap();
+        log(&format!("serialized provider:    {}", serialized_provider));
+        let deserialized_provider = Provider::deserialize_js(&serialized_provider)
+            .map_err(js_error_to_string)
+            .unwrap();
+
         let add_msgs = chess_club_alice
-            .native_add_member(&alice_provider, &alice, bob_key_pkg.0)
+            .native_add_member(&deserialized_provider, &alice, bob_key_pkg.0)
             .map_err(js_error_to_string)
             .unwrap();
 
         chess_club_alice
-            .merge_pending_commit(&alice_provider)
+            .merge_pending_commit(&deserialized_provider)
             .map_err(js_error_to_string)
             .unwrap();
 
