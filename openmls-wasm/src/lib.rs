@@ -488,8 +488,21 @@ impl std::fmt::Display for NoWelcomeError {
 impl std::error::Error for NoWelcomeError {}
 
 #[wasm_bindgen]
+#[derive(SerdeSerialize, SerdeDeserialize)]
 pub struct KeyPackage(OpenMlsKeyPackage);
 
+#[wasm_bindgen]
+impl KeyPackage {
+    pub fn serialize(&self) -> Result<String, JsError> {
+        serde_json::to_string(self)
+            .map_err(|e| JsError::new(&format!("Serialization error: {}", e)))
+    }
+
+    pub fn deserialize(serialized: &str) -> Result<KeyPackage, JsError> {
+        serde_json::from_str(serialized)
+            .map_err(|e| JsError::new(&format!("Deserialization error: {}", e)))
+    }
+}
 impl KeyPackage {
     // Method to clone the inner OpenMlsKeyPackage
     pub fn clone_inner(&self) -> OpenMlsKeyPackage {
@@ -498,7 +511,21 @@ impl KeyPackage {
 }
 
 #[wasm_bindgen]
+#[derive(SerdeSerialize, SerdeDeserialize)]
 pub struct RatchetTree(RatchetTreeIn);
+
+#[wasm_bindgen]
+impl RatchetTree {
+    pub fn serialize(&self) -> Result<String, JsError> {
+        serde_json::to_string(self)
+            .map_err(|e| JsError::new(&format!("Serialization error: {}", e)))
+    }
+
+    pub fn deserialize(serialized: &str) -> Result<RatchetTree, JsError> {
+        serde_json::from_str(serialized)
+            .map_err(|e| JsError::new(&format!("Deserialization error: {}", e)))
+    }
+}
 
 fn mls_message_to_uint8array(msg: &MlsMessageOut) -> Uint8Array {
     // see https://github.com/rustwasm/wasm-bindgen/issues/1619#issuecomment-505065294
@@ -521,6 +548,7 @@ fn mls_message_to_u8vec(msg: &MlsMessageOut) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::value::Serializer;
     use super::*;
 
     fn js_error_to_string(e: JsError) -> String {
@@ -610,6 +638,14 @@ mod tests {
         let alice_key_pkg = alice.key_package(&alice_provider);
         let bob_key_pkg = bob.key_package(&bob_provider);
         let carol_key_pkg = carol.key_package(&carol_provider);
+
+        let serialized_carol_key_pkg = carol_key_pkg.serialize()
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        let deserialized_key_pkg = KeyPackage::deserialize(&serialized_carol_key_pkg)
+            .map_err(js_error_to_string)
+            .unwrap();
 
         let add_msgs_bob = chess_club_alice
             .native_add_member(&alice_provider, &alice, bob_key_pkg.0.clone())
