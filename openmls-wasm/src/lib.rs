@@ -4,7 +4,6 @@ mod openmls_rust_persistent_crypto;
 use js_sys::Uint8Array;
 use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 use tls_codec::{Deserialize, Serialize};
-use wasm_bindgen::convert::IntoWasmAbi;
 use wasm_bindgen::prelude::*;
 
 use openmls::{
@@ -669,7 +668,7 @@ mod tests {
             .map_err(js_error_to_string)
             .unwrap();
 
-        let deserialized_key_pkg = KeyPackage::deserialize(&serialized_carol_key_pkg)
+        let _deserialized_key_pkg = KeyPackage::deserialize(&serialized_carol_key_pkg)
             .map_err(js_error_to_string)
             .unwrap();
 

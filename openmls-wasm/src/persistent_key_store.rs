@@ -10,6 +10,9 @@ use wasm_bindgen::JsError;
 
 use openmls_traits::key_store::{MlsEntity, OpenMlsKeyStore};
 
+use base64::engine::Engine;
+use base64::engine::general_purpose::STANDARD;
+
 #[derive(Debug, Default)]
 pub struct PersistentKeyStore {
     values: RwLock<HashMap<Vec<u8>, Vec<u8>>>,
@@ -72,17 +75,19 @@ impl PersistentKeyStore {
         let values = self.values.read().unwrap();
         let mut serializable_values = HashMap::new();
         for (k, v) in values.iter() {
-            serializable_values.insert(base64::encode(k), base64::encode(v));
+            // Use STANDARD.encode for both keys and values
+            serializable_values.insert(STANDARD.encode(k), STANDARD.encode(v));
         }
         serde_json::to_string(&serializable_values).map_err(JsError::from)
     }
+
     pub fn deserialize(json_str: &str) -> Result<Self, JsError> {
         let serializable_values: HashMap<String, String> = serde_json::from_str(json_str)
             .map_err(JsError::from)?;
         let mut values = HashMap::new();
         for (k, v) in serializable_values {
-            let key = base64::decode(k).map_err(JsError::from)?;
-            let value = base64::decode(v).map_err(JsError::from)?;
+            let key = STANDARD.decode(k.as_bytes()).map_err(JsError::from)?;
+            let value = STANDARD.decode(v.as_bytes()).map_err(JsError::from)?;
             values.insert(key, value);
         }
         Ok(PersistentKeyStore {
