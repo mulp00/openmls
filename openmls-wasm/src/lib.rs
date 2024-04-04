@@ -167,6 +167,10 @@ pub struct RemoveMessages {
     commit: Uint8Array,
     welcome: Option<Uint8Array>,
 }
+#[wasm_bindgen]
+pub struct LeaveMessage {
+    commit: Uint8Array,
+}
 
 #[cfg(test)]
 #[allow(dead_code)]
@@ -180,6 +184,11 @@ struct NativeAddMessages {
 pub struct NativeRemoveMessages {
     commit: Vec<u8>,
     welcome: Option<Vec<u8>>,
+}
+#[cfg(test)]
+#[allow(dead_code)]
+pub struct NativeLeaveMessage {
+    commit: Vec<u8>,
 }
 
 #[wasm_bindgen]
@@ -204,6 +213,15 @@ impl RemoveMessages {
     pub fn welcome(&self) -> Option<Uint8Array> {
         self.welcome.clone()
     }
+}
+
+#[wasm_bindgen]
+impl LeaveMessage {
+    #[wasm_bindgen(getter)]
+    pub fn commit(&self) -> Uint8Array {
+        self.commit.clone()
+    }
+
 }
 
 #[wasm_bindgen]
@@ -281,6 +299,23 @@ impl Group {
         Ok(RemoveMessages {
             commit,
             welcome,
+        })
+    }
+
+    pub fn leave(
+        &mut self,
+        provider: &Provider,
+        sender: &Identity,
+    ) -> Result<LeaveMessage, JsError> {
+        let mls_message_out = self
+            .mls_group
+            .leave_group(provider.as_ref(), &sender.keypair)
+            .map_err(|e| JsError::new(&format!("Failed to leave group: {}", e)))?;
+
+        let commit = mls_message_to_uint8array(&mls_message_out);
+
+        Ok(LeaveMessage {
+            commit
         })
     }
 
@@ -451,6 +486,22 @@ impl Group {
             welcome,
         })
     }
+    pub fn native_leave(
+        &mut self,
+        provider: &Provider,
+        sender: &Identity,
+    ) -> Result<NativeLeaveMessage, JsError> {
+        let mls_message_out = self
+            .mls_group
+            .leave_group(provider.as_ref(), &sender.keypair)
+            .map_err(|e| JsError::new(&format!("Failed to leave group: {}", e)))?;
+
+        let commit = mls_message_to_u8vec(&mls_message_out);
+
+        Ok(NativeLeaveMessage {
+            commit,
+        })
+    }
     pub fn native_update_key_package(
         &mut self,
         provider: &Provider,
@@ -611,6 +662,7 @@ mod tests {
             .map_err(js_error_to_string)
             .unwrap();
         log(&format!("serialized provider:    {}", serialized_provider));
+
         let deserialized_provider = Provider::deserialize_js(&serialized_provider)
             .map_err(js_error_to_string)
             .unwrap();
@@ -627,7 +679,7 @@ mod tests {
 
         let ratchet_tree = chess_club_alice.export_ratchet_tree();
 
-        let chess_club_bob = Group::native_join(&bob_provider, &add_msgs.welcome, ratchet_tree);
+        let mut chess_club_bob = Group::native_join(&bob_provider, &add_msgs.welcome, ratchet_tree);
 
         let bob_exported_key = chess_club_bob
             .export_key(&bob_provider, "chess_key", &[0x30], 32)
@@ -638,7 +690,21 @@ mod tests {
             .map_err(js_error_to_string)
             .unwrap();
 
-        assert_eq!(bob_exported_key, alice_exported_key)
+        assert_eq!(bob_exported_key, alice_exported_key);
+
+        let bob_leave_msg = chess_club_bob.native_leave(&bob_provider, &bob)
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        chess_club_bob
+            .merge_pending_commit(&bob_provider)
+            .map_err(js_error_to_string)
+            .unwrap();
+
+        chess_club_alice.process_message(&alice_provider, &bob_leave_msg.commit)
+            .map_err(js_error_to_string)
+            .unwrap();
+
     }
 
     #[wasm_bindgen_test]
