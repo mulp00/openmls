@@ -168,6 +168,11 @@ pub struct RemoveMessages {
     welcome: Option<Uint8Array>,
 }
 #[wasm_bindgen]
+pub struct UpdateKeyPackageMessage {
+    commit: Uint8Array,
+}
+
+#[wasm_bindgen]
 pub struct LeaveMessage {
     commit: Uint8Array,
 }
@@ -212,6 +217,13 @@ impl RemoveMessages {
     #[wasm_bindgen(getter)]
     pub fn welcome(&self) -> Option<Uint8Array> {
         self.welcome.clone()
+    }
+}
+#[wasm_bindgen]
+impl UpdateKeyPackageMessage {
+    #[wasm_bindgen(getter)]
+    pub fn commit(&self) -> Uint8Array {
+        self.commit.clone()
     }
 }
 
@@ -323,7 +335,7 @@ impl Group {
         &mut self,
         provider: &Provider,
         sender: &Identity,
-    ) -> Result<RemoveMessages, JsError> {
+    ) -> Result<UpdateKeyPackageMessage, JsError> {
         let (mls_message_out, welcome_option, _group_info) = self
             .mls_group
             .self_update(provider.as_ref(), &sender.keypair)
@@ -332,9 +344,8 @@ impl Group {
         let commit = mls_message_to_uint8array(&mls_message_out);
         let welcome = welcome_option.map(|welcome_message| mls_message_to_uint8array(&welcome_message));
 
-        Ok(RemoveMessages {
+        Ok(UpdateKeyPackageMessage {
             commit,
-            welcome,
         })
     }
 
